@@ -1,6 +1,7 @@
-const puppeteer = require('puppeteer'); 
+const puppeteer = require('puppeteer');
 const fs = require('fs');
 
+// 🔍 Requêtes avancées pour trouver les bons profils
 const queries = [
   `"créatrices MyM" OR "recommandation MyM" OR "MyM à suivre" OR "top MyM" lang:fr -filter:replies min_faves:5`,
   `"quelle créatrice MyM" OR "vos créatrices MyM préférées" OR "MyM que vous suivez" lang:fr min_replies:3`,
@@ -14,8 +15,8 @@ const queries = [
   `"site MyM" OR "alternative à OnlyFans" OR "contenu premium" lang:fr min_faves:5`
 ];
 
-const MAX_LIKES = 3;
-const MAX_TWEETS_TO_SCAN = 10;
+const MAX_LIKES = 5;
+const MAX_TWEETS_TO_SCAN = 15;
 const WAIT_BETWEEN_ACTIONS = [3000, 7000];
 
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -24,7 +25,7 @@ const randomBetween = (min, max) => Math.floor(Math.random() * (max - min + 1)) 
 (async () => {
   console.log("🚀 Lancement Puppeteer (profil Chrome existant)...");
 
-  // ---------- Connexion inchangée ----------
+  // ---------- Connexion (ne pas modifier) ----------
   const executablePath = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'; 
   const userDataDir = 'C:\\Users\\gamer\\AppData\\Local\\Google\\Chrome\\User Data\\Default';
 
@@ -35,6 +36,8 @@ const randomBetween = (min, max) => Math.floor(Math.random() * (max - min + 1)) 
     defaultViewport: null,
     args: ['--start-maximized', '--no-sandbox', '--disable-setuid-sandbox']
   });
+
+  let totalLikes = 0;
 
   try {
     const page = await browser.newPage();
@@ -51,70 +54,101 @@ const randomBetween = (min, max) => Math.floor(Math.random() * (max - min + 1)) 
       console.log('⚠️ Impossible de détecter une session active.');
     }
 
-    // ---------- Choix aléatoire d’une query avancée ----------
-    const query = queries[Math.floor(Math.random() * queries.length)];
-    console.log(`🔍 Recherche: ${query}`);
-    const searchUrl = `https://x.com/search?q=${encodeURIComponent(query)}&f=live`;
-    await page.goto(searchUrl, { waitUntil: 'networkidle2' });
-    await wait(5000);
+    // ✅ Vérifie et désactive le filtrage de contenu sensible
+    await ensureSensitiveContentDisabled(page);
 
-    // Scroll pour charger du contenu
-    await autoScroll(page);
+    // ---------- Boucle sur les requêtes ----------
+    for (const query of queries) {
+      if (totalLikes >= MAX_LIKES) break;
 
-    const tweets = await page.$$('div[data-testid="tweet"]');
-    console.log(`📄 ${tweets.length} tweets détectés (scan max ${MAX_TWEETS_TO_SCAN})`);
+      console.log(`\n🔍 Recherche: ${query}`);
+      const searchUrl = `https://x.com/search?q=${encodeURIComponent(query)}&f=live`;
+      await page.goto(searchUrl, { waitUntil: 'networkidle2' });
+      await wait(4000);
 
-    let likes = 0;
-    let scanned = 0;
+      // ✅ Vérifie s’il y a un message “No results”
+      const noResults = await page.evaluate(() => {
+        const textContent = document.body.innerText.toLowerCase();
+        return textContent.includes('no results') || textContent.includes('aucun résultat');
+      });
 
-    for (let i = 0; i < tweets.length && scanned < MAX_TWEETS_TO_SCAN && likes < MAX_LIKES; i++) {
-      scanned++;
-      const tweet = tweets[i];
+      if (noResults) {
+        console.log('❌ Aucun résultat pour cette requête, on passe à la suivante.');
+        continue;
+      }
 
-      try {
-        const textHandle = await tweet.$('div[lang]');
-        const txt = textHandle ? await page.evaluate(el => el.innerText, textHandle) : '';
+      // Scroll profond pour charger les tweets
+      await deepScroll(page, 3);
+      const tweets = await page.$$('div[data-testid="tweet"]');
+      console.log(`📄 ${tweets.length} tweets détectés.`);
 
-        // ✅ Filtrage rapide : uniquement tweets pertinents MYM
-        if (!txt.match(/MyM|créatrice|fans?|contenu|OnlyFans/i)) continue;
+      let scanned = 0;
+      for (const tweet of tweets) {
+        if (scanned >= MAX_TWEETS_TO_SCAN || totalLikes >= MAX_LIKES) break;
+        scanned++;
 
-        const likeBtn = await tweet.$('div[data-testid="like"]');
-        if (likeBtn) {
-          await likeBtn.click();
-          likes++;
-          console.log(`💖 Like #${likes} sur tweet index ${i+1}. Extrait: "${txt.slice(0,80)}"`);
-          await wait(randomBetween(...WAIT_BETWEEN_ACTIONS));
+        try {
+          const textHandle = await tweet.$('div[lang]');
+          const txt = textHandle ? await page.evaluate(el => el.innerText, textHandle) : '';
+
+          // 🎯 Filtrage thématique
+          if (!txt.match(/MyM|créatrice|OnlyFans|fans?|contenu/i)) continue;
+
+          const likeBtn = await tweet.$('div[data-testid="like"]');
+          if (likeBtn) {
+            await likeBtn.click();
+            totalLikes++;
+            console.log(`💖 Like #${totalLikes} — extrait: "${txt.slice(0, 80)}..."`);
+            await wait(randomBetween(...WAIT_BETWEEN_ACTIONS));
+          }
+        } catch (err) {
+          console.log(`⛔ Erreur tweet: ${err.message}`);
         }
-
-      } catch (err) {
-        console.log(`⛔ Erreur tweet index ${i+1}: ${err.message}`);
       }
     }
 
-    console.log(`✅ Cycle terminé — ${likes} like(s) sur ${scanned} tweets analysés.`);
-    await wait(2000 + Math.random()*2000);
+    console.log(`\n✅ Script terminé — ${totalLikes} like(s) effectués.`);
+    await wait(2000 + Math.random() * 2000);
 
   } catch (errMain) {
-    console.error('Erreur globale du script :', errMain);
+    console.error('💥 Erreur globale du script :', errMain);
   } finally {
     try { await browser.close(); } catch (e) {}
     console.log('🔚 Navigateur fermé — script terminé.');
   }
 })();
 
-async function autoScroll(page) {
-  await page.evaluate(async () => {
-    await new Promise(resolve => {
-      let totalHeight = 0;
-      const distance = 500;
-      const timer = setInterval(() => {
-        window.scrollBy(0, distance);
-        totalHeight += distance;
-        if (totalHeight >= document.body.scrollHeight - window.innerHeight) {
-          clearInterval(timer);
-          resolve();
-        }
-      }, 800);
+
+// ----------- Fonctions utilitaires -----------
+
+async function deepScroll(page, passes = 3) {
+  for (let i = 0; i < passes; i++) {
+    await page.evaluate(() => {
+      window.scrollBy(0, window.innerHeight * 2);
     });
-  });
+    await wait(2000 + Math.random() * 1500);
+  }
+}
+
+async function ensureSensitiveContentDisabled(page) {
+  console.log('⚙️ Vérification du filtrage de contenu sensible...');
+  await page.goto('https://x.com/settings/privacy_and_safety', { waitUntil: 'networkidle2' });
+  await wait(4000);
+
+  const bodyText = await page.evaluate(() => document.body.innerText.toLowerCase());
+  if (bodyText.includes('afficher le contenu pouvant contenir du matériel sensible') ||
+      bodyText.includes('display media that may contain sensitive content')) {
+
+    // Essaie de cliquer sur la bascule si présente
+    const toggle = await page.$('input[type="checkbox"], div[role="switch"]');
+    if (toggle) {
+      await toggle.click().catch(() => {});
+      console.log('🔓 Option de contenu sensible activée.');
+      await wait(2000);
+    } else {
+      console.log('ℹ️ Option introuvable, vérifie manuellement dans les paramètres si nécessaire.');
+    }
+  } else {
+    console.log('✅ Contenu sensible déjà autorisé.');
+  }
 }
